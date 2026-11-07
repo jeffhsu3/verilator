@@ -119,6 +119,7 @@ private:
         case VDfgType::LteS:
         case VDfgType::ModDiv:
         case VDfgType::ModDivS:
+        case VDfgType::MostSetBitP1:
         case VDfgType::Mul:
         case VDfgType::MulS:
         case VDfgType::Negate:
@@ -271,6 +272,7 @@ private:
         case VDfgType::LteS:
         case VDfgType::ModDiv:
         case VDfgType::ModDivS:
+        case VDfgType::MostSetBitP1:
         case VDfgType::Mul:
         case VDfgType::MulS:
         case VDfgType::Negate:

@@ -5931,6 +5931,7 @@ public:
 };
 class AstMostSetBitP1 final : public AstNodeUniop {
     // Most-significant set bit plus one (bit-width); 0 if value is zero
+    // @astgen makeDfgVertex
 public:
     AstMostSetBitP1(FileLine* fl, AstNodeExpr* lhsp)
         : ASTGEN_SUPER_MostSetBitP1(fl, lhsp) {

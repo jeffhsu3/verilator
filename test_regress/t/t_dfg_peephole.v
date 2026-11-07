@@ -33,6 +33,7 @@ module t (
   // verilator lint_on ASCRANGE
 
   wire        logic randbit_a = rand_a[0];
+  `signal(cond_leading_zeros, rand_a[6] ? 3'd0 : rand_a[5] ? 3'd1 : rand_a[4] ? 3'd2 : rand_a[3] ? 3'd3 : rand_a[2] ? 3'd4 : rand_a[1] ? 3'd5 : rand_a[0] ? 3'd6 : 3'd7);
   wire        logic [127:0] rand_ba = {rand_b, rand_a};
   wire        logic [127:0] rand_aa = {2{rand_a}};
   wire        logic [63:0] const_a;

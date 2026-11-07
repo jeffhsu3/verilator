@@ -33,6 +33,9 @@
 // handled in a single pass. The 'iter' list ensures the algorithm runs
 // to fixed point if no pattern looks deeper across the graph than the
 // neighborhood considered on the next iteration.
+// Leading-zero trees are recognized once before these local rewrites, which
+// otherwise obscure their structure. Their summaries are memoized so shared
+// subtrees are analyzed only once.
 //
 //*************************************************************************
 
@@ -142,6 +145,7 @@ template <> void foldOp<DfgCountOnes>  (V3Number& out, const V3Number& src) { ou
 template <> void foldOp<DfgExtend>     (V3Number& out, const V3Number& src) { out.opAssign(src); }
 template <> void foldOp<DfgExtendS>    (V3Number& out, const V3Number& src) { out.opExtendS(src, src.width()); }
 template <> void foldOp<DfgLogNot>     (V3Number& out, const V3Number& src) { out.opLogNot(src); }
+template <> void foldOp<DfgMostSetBitP1> (V3Number& out, const V3Number& src) { out.opMostSetBitP1(src); }
 template <> void foldOp<DfgNegate>     (V3Number& out, const V3Number& src) { out.opNegate(src); }
 template <> void foldOp<DfgNot>        (V3Number& out, const V3Number& src) { out.opNot(src); }
 template <> void foldOp<DfgOneHot>     (V3Number& out, const V3Number& src) { out.opOneHot(src); }
@@ -188,6 +192,125 @@ template <> void foldOp<DfgXor>        (V3Number& out, const V3Number& lhs, cons
 }
 // clang-format on
 
+class DfgLeadingZeros final {
+public:
+    struct Match final {
+        DfgCond* vtxp;
+        DfgVertex* srcp;
+        uint32_t lsb;
+        uint32_t width;
+    };
+
+private:
+    // For nonzero srcp[lsb +: width], the result is bias minus the position of
+    // its highest set bit in srcp. Otherwise the result is zerop. In particular,
+    // upper subtrees may have a different zero result, unreachable in the parent.
+    struct Encoding final {
+        DfgVertex* srcp = nullptr;
+        DfgConst* zerop = nullptr;
+        uint32_t lsb = 0;
+        uint32_t width = 0;
+        uint64_t bias = 0;
+        bool visited = false;
+    };
+
+    DfgUserMap<Encoding> m_encodings;
+
+    static bool isZero(const DfgVertex* vtxp) {
+        const DfgConst* const constp = vtxp->cast<DfgConst>();
+        return constp && constp->isZero();
+    }
+
+    // Find the vector tested for nonzero, and account for inverted conditions.
+    static DfgVertex* testedSource(DfgVertex* vtxp, bool& inverted) {
+        if (DfgNot* const notp = vtxp->cast<DfgNot>()) {
+            if (notp->width() != 1) return nullptr;
+            inverted = !inverted;
+            return testedSource(notp->srcp(), inverted);
+        }
+        if (DfgLogNot* const notp = vtxp->cast<DfgLogNot>()) {
+            inverted = !inverted;
+            return notp->srcp();
+        }
+        if (DfgRedOr* const redp = vtxp->cast<DfgRedOr>()) return redp->srcp();
+        if (vtxp->is<DfgEq>() || vtxp->is<DfgNeq>()) {
+            inverted ^= vtxp->is<DfgEq>();
+            if (isZero(vtxp->inputp(0))) return vtxp->inputp(1);
+            if (isZero(vtxp->inputp(1))) return vtxp->inputp(0);
+            return nullptr;
+        }
+        return vtxp->width() == 1 ? vtxp : nullptr;
+    }
+
+    Encoding analyze(DfgCond* const vtxp) {
+        if (vtxp->width() > 32) return {};
+        bool inverted = false;
+        DfgVertex* srcp = testedSource(vtxp->condp(), inverted);
+        if (!srcp) return {};
+        const uint32_t width = srcp->width();
+        uint32_t lsb = 0;
+        while (DfgSel* const selp = srcp->cast<DfgSel>()) {
+            lsb += selp->lsb();
+            srcp = selp->fromp();
+        }
+        DfgVertex* const upperp = inverted ? vtxp->elsep() : vtxp->thenp();
+        DfgVertex* const lowerp = inverted ? vtxp->thenp() : vtxp->elsep();
+        Encoding upper;
+        if (DfgConst* const constp = upperp->cast<DfgConst>()) {
+            // A nonzero single bit determines the encoded position directly.
+            if (width != 1) return {};
+            upper.srcp = srcp;
+            upper.lsb = lsb;
+            upper.width = width;
+            upper.bias = static_cast<uint64_t>(constp->toU32()) + lsb;
+        } else {
+            upper = encoding(upperp);
+            // The condition must test precisely the bits encoded by the upper subtree.
+            if (upper.srcp != srcp || upper.lsb != lsb || upper.width != width) return {};
+        }
+        if (DfgConst* const constp = lowerp->cast<DfgConst>()) {
+            upper.zerop = constp;
+            return upper;
+        }
+        const Encoding& lower = encoding(lowerp);
+        if (lower.srcp != srcp || lower.lsb + lower.width != lsb || lower.bias != upper.bias) {
+            return {};
+        }
+        upper.lsb = lower.lsb;
+        upper.width += lower.width;
+        upper.zerop = lower.zerop;
+        return upper;
+    }
+
+    const Encoding& encoding(DfgVertex* const vtxp) {
+        Encoding& result = m_encodings[vtxp];
+        if (!result.visited) {
+            if (DfgCond* const condp = vtxp->cast<DfgCond>()) result = analyze(condp);
+            result.visited = true;
+        }
+        return result;
+    }
+
+    explicit DfgLeadingZeros(DfgGraph& dfg)
+        : m_encodings{dfg.makeUserMap<Encoding>()} {}
+
+public:
+    static std::vector<Match> find(DfgGraph& dfg) {
+        DfgLeadingZeros matcher{dfg};
+        std::vector<Match> matches;
+        for (DfgVertex& vtx : dfg.opVertices()) {
+            DfgCond* const condp = vtx.cast<DfgCond>();
+            if (!condp) continue;
+            const Encoding& enc = matcher.encoding(condp);
+            if (!enc.srcp || enc.width < 2) continue;
+            if (enc.bias != enc.lsb + enc.width - 1) continue;
+            if (!enc.zerop->hasValue(enc.width)) continue;
+            matches.push_back({condp, enc.srcp, enc.lsb, enc.width});
+        }
+        return matches;
+    }
+};
+
 class V3DfgPeephole final : public DfgVisitor {
     // TYPES
     struct VertexInfo final {
@@ -217,14 +340,51 @@ class V3DfgPeephole final : public DfgVisitor {
     // STATIC STATE
     static V3DebugBisect s_debugBisect;  // Debug aid
 
-#define APPLYING(id) if (checkApplying(VDfgPeepholePattern::id))
+#define APPLYING(id) if (checkApplying(m_ctx, VDfgPeepholePattern::id))
 
     // METHODS
-    bool checkApplying(VDfgPeepholePattern id) {
-        if (VL_UNLIKELY(!m_ctx.m_enabled[id] || s_debugBisect.isStopped())) return false;
+    static bool checkApplying(V3DfgPeepholeContext& ctx, VDfgPeepholePattern id) {
+        if (VL_UNLIKELY(!ctx.m_enabled[id] || s_debugBisect.isStopped())) return false;
         UINFO(9, "Applying DFG pattern " << id.ascii());
-        ++m_ctx.m_count[id];
+        ++ctx.m_count[id];
         return true;
+    }
+
+    static void replaceLeadingZeros(DfgGraph& dfg, V3DfgPeepholeContext& ctx) {
+        if (!ctx.m_enabled[VDfgPeepholePattern::REPLACE_COND_LEADING_ZEROS]) return;
+        std::vector<std::pair<DfgVertex*, DfgVertex*>> replacements;
+        for (const DfgLeadingZeros::Match& match : DfgLeadingZeros::find(dfg)) {
+            if (checkApplying(ctx, VDfgPeepholePattern::REPLACE_COND_LEADING_ZEROS)) {
+                FileLine* const flp = match.vtxp->fileline();
+                DfgVertex* srcp = match.srcp;
+                if (match.width != srcp->width()) {
+                    DfgSel* const selp = new DfgSel{dfg, flp, DfgDataType::packed(match.width)};
+                    selp->fromp(srcp);
+                    selp->lsb(match.lsb);
+                    srcp = selp;
+                }
+                const DfgDataType& intDType = DfgDataType::packed(32);
+                DfgMostSetBitP1* const scanp = new DfgMostSetBitP1{dfg, flp, intDType};
+                scanp->srcp(srcp);
+                DfgSub* const subp = new DfgSub{dfg, flp, intDType};
+                subp->lhsp(new DfgConst{dfg, flp, 32, match.width});
+                subp->rhsp(scanp);
+                DfgVertex* resultp = subp;
+                if (match.vtxp->width() != 32) {
+                    DfgSel* const selp = new DfgSel{dfg, flp, match.vtxp->dtype()};
+                    selp->fromp(resultp);
+                    selp->lsb(0);
+                    resultp = selp;
+                }
+                replacements.emplace_back(match.vtxp, resultp);
+            }
+        }
+        // Create all replacements before changing any edges: a matched encoder
+        // can itself be the input to another matched encoder.
+        for (const std::pair<DfgVertex*, DfgVertex*>& pair : replacements) {
+            pair.first->replaceWith(pair.second);
+        }
+        V3DfgPasses::removeUnused(dfg);
     }
 
     // Add vertex to the cache. If an equivalent (but different) vertex is
@@ -1521,6 +1681,10 @@ class V3DfgPeephole final : public DfgVisitor {
     //=========================================================================
 
     void visit(DfgCountOnes* const vtxp) override {
+        if (foldUnary(vtxp)) return;
+    }
+
+    void visit(DfgMostSetBitP1* const vtxp) override {
         if (foldUnary(vtxp)) return;
     }
 
@@ -3516,7 +3680,10 @@ class V3DfgPeephole final : public DfgVisitor {
 #undef APPLYING
 
 public:
-    static void apply(DfgGraph& dfg, V3DfgPeepholeContext& ctx) { V3DfgPeephole{dfg, ctx}; }
+    static void apply(DfgGraph& dfg, V3DfgPeepholeContext& ctx) {
+        replaceLeadingZeros(dfg, ctx);
+        V3DfgPeephole{dfg, ctx};
+    }
 };
 
 V3DebugBisect V3DfgPeephole::s_debugBisect{"DfgPeephole"};

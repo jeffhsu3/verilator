@@ -671,11 +671,11 @@ void DfgVertex::typeCheck(const DfgGraph& dfg) const {
         return;
     }
 
-    case VDfgType::CountOnes: {
-        const DfgCountOnes& v = *as<DfgCountOnes>();
-        CHECK(v.isPacked(), "Should be Packed type");
-        CHECK(v.srcp()->isPacked(), "Source should be Packed type");
-        CHECK(v.size() == 32U, "Should yield a 32-bit result");
+    case VDfgType::CountOnes:
+    case VDfgType::MostSetBitP1: {
+        CHECK(isPacked(), "Should be Packed type");
+        CHECK(inputp(0)->isPacked(), "Source should be Packed type");
+        CHECK(size() == 32U, "Should yield a 32-bit result");
         return;
     }
 
