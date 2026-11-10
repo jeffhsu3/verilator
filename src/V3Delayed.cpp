@@ -46,9 +46,9 @@
 // means an NBA in such a function may be executed by different classes of logic.
 //
 // NBAs in combinational logic cannot be supported. These have either been
-// rejected earlier in V3Active with a COMBDLY error, or will be rejected
-// in this pass with a COMBDLYCALL error if performed by a non-inlined function
-// which is called from combinational logic.
+// converted to blocking assignments earlier in V3Active with a COMBDLY warning,
+// or will be rejected in this pass with a COMBDLYCALL error if performed by a
+// non-inlined function which is called from combinational logic.
 //
 // For the choice of the correct scheme, it is also necessary to know if the
 // target of an NBA also has other blocking writes also targeting it.
@@ -159,7 +159,6 @@
 
 #include "V3Delayed.h"
 
-#include "V3AstUserAllocator.h"
 #include "V3CallTargets.h"
 #include "V3Const.h"
 #include "V3EmitCBase.h"
@@ -167,6 +166,7 @@
 #include "V3LinkLValue.h"
 #include "V3SharedTmps.h"
 #include "V3Stats.h"
+#include "V3VNUserAllocator.h"
 
 #include <unordered_set>
 
@@ -218,7 +218,7 @@ protected:
     class CodeVertex VL_NOT_FINAL : public Vertex {
         VL_RTTI_IMPL(CodeVertex, Vertex)
     public:
-        std::vector<AstNodeExpr*> m_wrps;  // Blocking write refs (AstVarRef or AstMemberSel)
+        std::vector<AstNodeExpr*> m_wrps;  // Blocking write refs (AstVarRef or AstMemberRef)
         bool m_comb = false;  // Part of combinational logic
         bool m_clocked = false;  // Part of clocked logic
         bool m_unordered = false;  // Part of unordered code
@@ -352,7 +352,7 @@ protected:
     // Data required to lower an NBA later
     struct NBA final {
         AstNodeStmt* nodep;  // The AstAssignDly, or the non-blocking AstFireEvent
-        AstNodeExpr* targetp;  // The AstVarRef it updates, or the AstMemberSel via a handle
+        AstNodeExpr* targetp;  // The AstVarRef it updates, or the AstMemberRef via a handle
         AstScope* scopep;  // The scope the NBA is in
     };
 
@@ -365,7 +365,7 @@ public:
         const VNUser1InUse m_user1InUse;
 
     public:
-        AstUser1Allocator<AstNode, TargetInfo> targetInfo;  // See TargetInfo
+        VNUser1Allocator<AstNode, TargetInfo> targetInfo;  // See TargetInfo
         std::vector<AstVarScope*> nbaVscps;  // Variables updated by NBAs
         std::vector<AstVar*> nbaVarps;  // Members updated by NBAs via a handle, in any instance
         // Variables of each member of an interface, in all instances
@@ -429,8 +429,8 @@ class DelayedRecord final : public VNVisitorConst, public DelayedBase {
         while (true) {
             if (AstVarRef* const refp = VN_CAST(lhsp, VarRef)) {
                 return refp;
-            } else if (AstMemberSel* const selp = VN_CAST(lhsp, MemberSel)) {
-                return selp;
+            } else if (AstMemberRef* const memberRefp = VN_CAST(lhsp, MemberRef)) {
+                return memberRefp;
             } else if (const AstSel* const selp = VN_CAST(lhsp, Sel)) {
                 lhsp = selp->fromp();
             } else if (const AstNodeSel* const selp = VN_CAST(lhsp, NodeSel)) {
@@ -460,8 +460,8 @@ class DelayedRecord final : public VNVisitorConst, public DelayedBase {
                 if (!vscp->user2SetOnce()) m_state.nbaVscps.emplace_back(vscp);
                 return info;
             }
-            if (AstMemberSel* const selp = VN_CAST(nbaRefp, MemberSel)) {
-                AstVar* const varp = selp->varp();
+            if (AstMemberRef* const memberRefp = VN_CAST(nbaRefp, MemberRef)) {
+                AstVar* const varp = memberRefp->varp();
                 TargetInfo& info = m_state.targetInfo(varp);
                 if (!varp->user2SetOnce()) m_state.nbaVarps.emplace_back(varp);
                 return info;
@@ -523,9 +523,6 @@ class DelayedRecord final : public VNVisitorConst, public DelayedBase {
         m_vtxp = new ProcVertex{&m_state.graph, m_activep->sentreep(), nodep};
         iterateChildrenConst(nodep);
     }
-    void visit(AstCoverToggle*) override {
-        // Toggle coverage only writes its own variables, which are not updated by NBAs, ignored
-    }
     void visit(AstCFunc* nodep) override {
         VL_RESTORER(m_vtxp);
         FuncVertex* const vtxp = funcVtxp(nodep);
@@ -580,7 +577,7 @@ class DelayedRecord final : public VNVisitorConst, public DelayedBase {
         UASSERT_OBJ(m_vtxp, nodep, "Write not in a process or function");
         m_vtxp->m_wrps.push_back(nodep);
     }
-    void visit(AstMemberSel* nodep) override {
+    void visit(AstMemberRef* nodep) override {
         iterateChildrenConst(nodep);
         // Only care about write refs, other than of NBA targets
         if (!nodep->access().isWriteOrRW() || m_inTarget) return;
@@ -724,7 +721,7 @@ class DelayedAnalysis final : public DelayedBase {
             for (AstNodeExpr* const refp : vtxp->m_wrps) {
                 if (const AstVarRef* const vrefp = VN_CAST(refp, VarRef)) {
                     noteBlockingWrite(m_state.targetInfo.tryGet(vrefp->varScopep()), vtxp, refp);
-                    // It might be the instance of an AstVar that is updated via a MemberSel.
+                    // It might be the instance of an AstVar that is updated via a MemberRef.
                     // Record unless no other process can legally write it by IEEE.
                     // The legality restriction is to avoid excessive warnings on common use cases
                     // where e.g. one interface instance is written directly, another through a
@@ -733,10 +730,10 @@ class DelayedAnalysis final : public DelayedBase {
                     if (!procVtxp || !procVtxp->m_exclusive) {
                         noteBlockingWrite(m_state.targetInfo.tryGet(vrefp->varp()), vtxp, refp);
                     }
-                } else if (const AstMemberSel* const selp = VN_CAST(refp, MemberSel)) {
-                    noteBlockingWrite(m_state.targetInfo.tryGet(selp->varp()), vtxp, refp);
+                } else if (const AstMemberRef* const memberRefp = VN_CAST(refp, MemberRef)) {
+                    noteBlockingWrite(m_state.targetInfo.tryGet(memberRefp->varp()), vtxp, refp);
                     // The handle may select the variable of any instance
-                    const auto it = var2TargetInfops.find(selp->varp());
+                    const auto it = var2TargetInfops.find(memberRefp->varp());
                     if (it == var2TargetInfops.end()) continue;
                     for (TargetInfo* const targetInfop : it->second) {
                         noteBlockingWrite(targetInfop, vtxp, refp);
@@ -869,7 +866,7 @@ class DelayedAnalysis final : public DelayedBase {
 
         // NBAs outside clocked logic need to stay in program order, so use generic
         if (targetInfo.m_nonClocked) return Scheme::GenericGlobal;
-        // NBAs to a variable also updated via a MemberSel use the global queue
+        // NBAs to a variable also updated via a MemberRef use the global queue
         // to preserve program order
         if (m_state.targetInfo.tryGet(vscp->varp())) return Scheme::GenericGlobal;
         // Events fired by NBAs, also members of a struct, use generic, as the other schemes commit
@@ -922,7 +919,7 @@ class DelayedAnalysis final : public DelayedBase {
         for (AstVar* const varp : m_state.nbaVarps) checkMixedUsage(varp);
 
         // Choose the scheme for each variable
-        // Targets updated via a MemberSel use the GenericGlobal scheme. This is the only one
+        // Targets updated via a MemberRef use the GenericGlobal scheme. This is the only one
         // that both respects program order and can capture arbitrary LHS expressions.
         for (AstVar* const varp : m_state.nbaVarps) {
             m_state.targetInfo(varp).m_scheme = Scheme::GenericGlobal;
@@ -1107,9 +1104,9 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         };
         AstNodeExpr* nodep = lhsp;
         while (!VN_IS(nodep, VarRef)) {
-            if (AstMemberSel* const selp = VN_CAST(nodep, MemberSel)) {
-                V3LinkLValue::linkLValueSet(selp->fromp(), VAccess::READ);
-                selp->fromp(capture(selp->fromp(), "Handle"));
+            if (AstMemberRef* const memberRefp = VN_CAST(nodep, MemberRef)) {
+                V3LinkLValue::linkLValueSet(memberRefp->fromp(), VAccess::READ);
+                memberRefp->fromp(capture(memberRefp->fromp(), "Handle"));
                 return lhsp;
             } else if (AstSel* const selp = VN_CAST(nodep, Sel)) {
                 selp->lsbp(capture(selp->lsbp(), "Lsb"));
@@ -1138,11 +1135,11 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
             v3Global.rootp()->typeTablep()->addTypesp(dtypepr);
         }
         AstNodeExpr* const thisp = capture(new AstThisRef{flp, dtypepr}, "This");
-        AstMemberSel* const selp = new AstMemberSel{flp, thisp, refp->varp()};
-        selp->access(refp->access());
+        AstMemberRef* const memberRefp = new AstMemberRef{flp, thisp, refp->varp()};
+        memberRefp->access(refp->access());
         pushDeletep(refp);
-        if (refp == lhsp) return selp;
-        refp->replaceWith(selp);
+        if (refp == lhsp) return memberRefp;
+        refp->replaceWith(memberRefp);
         return lhsp;
     }
 
@@ -1173,7 +1170,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         topScopep->scopep()->addBlocksp(activep);
         // Add 'Post' scheduled process for the commit
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
-        activep->addStmtsp(postp);
+        activep->addProcsp(postp);
         m_globalNbaCommitp
             = new AstNbaCommit{flp, new AstVarRef{flp, queueVscp, VAccess::READWRITE}};
         postp->addStmtsp(m_globalNbaCommitp);
@@ -1205,12 +1202,12 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         scopep->addBlocksp(activep);
         // Add 'Pre' scheduled 'shadowVariable = originalVariable' assignment
         AstAlwaysPre* const prep = new AstAlwaysPre{flp};
-        activep->addStmtsp(prep);
+        activep->addProcsp(prep);
         prep->addStmtsp(new AstAssign{flp, new AstVarRef{flp, shadowVscp, VAccess::WRITE},
                                       new AstVarRef{flp, vscp, VAccess::READ}});
         // Add 'Post' scheduled 'originalVariable = shadowVariable' assignment
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
-        activep->addStmtsp(postp);
+        activep->addProcsp(postp);
         postp->addStmtsp(new AstAssign{flp, new AstVarRef{flp, vscp, VAccess::WRITE},
                                        new AstVarRef{flp, shadowVscp, VAccess::READ}});
     }
@@ -1250,7 +1247,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         scopep->addBlocksp(activep);
         // Add 'Post' scheduled process for the commit and mask clear
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
-        activep->addStmtsp(postp);
+        activep->addProcsp(postp);
         // Add the commit - vscp = (shadowVscp & maskVscp) | (vscp & ~maskVscp);
         postp->addStmtsp(new AstAssign{
             flp, new AstVarRef{flp, vscp, VAccess::WRITE},
@@ -1307,7 +1304,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         targetInfo.flagSharedKit().activep = activep;
         // Add 'Post' scheduled process to be populated later
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
-        activep->addStmtsp(postp);
+        activep->addProcsp(postp);
         targetInfo.flagSharedKit().postp = postp;
         // Initialize
         targetInfo.flagSharedKit().commitFlagp = nullptr;
@@ -1358,7 +1355,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
                               new AstConst{flp, AstConst::BitTrue{}}});
             // Add the 'Pre' scheduled reset for the flag
             AstAlwaysPre* const prep = new AstAlwaysPre{flp};
-            targetInfo.flagSharedKit().activep->addStmtsp(prep);
+            targetInfo.flagSharedKit().activep->addProcsp(prep);
             prep->addStmtsp(new AstAssign{flp, new AstVarRef{flp, flagVscp, VAccess::WRITE},
                                           new AstConst{flp, AstConst::BitFalse{}}});
             // Add the 'Post' scheduled commit
@@ -1416,7 +1413,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         scopep->addBlocksp(activep);
         // Add 'Post' scheduled process for the commit
         AstAlwaysPost* const postp = new AstAlwaysPost{flp};
-        activep->addStmtsp(postp);
+        activep->addProcsp(postp);
         AstNbaCommit* const commitp
             = new AstNbaCommit{flp, new AstVarRef{flp, queueVscp, VAccess::READWRITE}};
         postp->addStmtsp(commitp);
@@ -1439,7 +1436,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
         if (AstVarScope* const vscp = VN_CAST(targetp, VarScope)) {
             commitp->addTargetsp(new AstVarRef{vscp->fileline(), vscp, VAccess::WRITE});
         } else {
-            // A MemberSel via a virtual interface may select any instance of that interface
+            // A MemberRef via a virtual interface may select any instance of that interface
             for (AstVarScope* const vscp : m_state.ifaceVscps[VN_AS(targetp, Var)]) {
                 // Avoid adding it twice if the instance is also the target of an explicit NBA
                 if (m_state.targetInfo.tryGet(vscp)) continue;
@@ -1533,7 +1530,7 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
             }
             }
         }
-        // Prepare each accessed via a MemberSel
+        // Prepare each accessed via a MemberRef
         for (AstVar* const varp : m_state.nbaVarps) {
             ++m_nSchemeGenericGlobal;
             prepareSchemeGenericGlobal(varp, m_state.targetInfo(varp));
@@ -1541,10 +1538,10 @@ class DelayedRewrite final : public VNDeleter, public DelayedBase {
 
         // Convert all NBAs
         for (const NBA& nba : m_state.nbas) {
-            const AstMemberSel* const selp = VN_CAST(nba.targetp, MemberSel);
+            const AstMemberRef* const memberRefp = VN_CAST(nba.targetp, MemberRef);
             TargetInfo& targetInfo
-                = selp ? m_state.targetInfo(selp->varp())  //
-                       : m_state.targetInfo(VN_AS(nba.targetp, VarRef)->varScopep());
+                = memberRefp ? m_state.targetInfo(memberRefp->varp())  //
+                             : m_state.targetInfo(VN_AS(nba.targetp, VarRef)->varScopep());
             // Run 'convert' step
             switch (targetInfo.m_scheme) {
             case Scheme::Undecided: {  // LCOV_EXCL_START

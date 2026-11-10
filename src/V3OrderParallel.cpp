@@ -21,7 +21,6 @@
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
 #include "V3Ast.h"
-#include "V3AstUserAllocator.h"
 #include "V3Control.h"
 #include "V3Error.h"
 #include "V3ExecGraph.h"
@@ -30,6 +29,7 @@
 #include "V3OrderCFuncEmitter.h"
 #include "V3OrderInternal.h"
 #include "V3OrderMTaskGraph.h"
+#include "V3VNUserAllocator.h"
 
 #include <map>
 #include <memory>
@@ -59,7 +59,7 @@ static void checkDataHazards(OrderMTaskGraph& mTaskGraph) {
 
     // AstVarScope::user1 -> VarInfo instance for the variable (via 'varInfos')
     const VNUser1InUse user1InUse;
-    AstUser1Allocator<AstVarScope, VarInfo> varInfos;
+    VNUser1Allocator<AstVarScope, VarInfo> varInfos;
 
     // The variables accessed (in enumerated order, for stability).
     std::vector<AstVarScope*> vscps;
@@ -295,6 +295,8 @@ AstNodeStmt* V3Order::createParallel(OrderMoveGraph& moveGraph, const std::strin
         if (!v3Global.opt.hierBlocks().empty()) {
             execMTaskp->threads(DpiThreadsVisitor::apply(execMTaskp));
         }
+        // A multi-thread hierarchical block task is placed automatically
+        if (execMTaskp->threads() == 1) execMTaskp->fixedThread(mTaskp->fixedThread());
         const bool newEntry = logicMTaskToExecMTask.emplace(mTaskp, execMTaskp).second;
         UASSERT_OBJ(newEntry, mTaskp, "LogicMTasks should be processed in dependencyorder");
         UINFO(3, "Final '" << tag << "' LogicMTask " << mTaskp->id() << " maps to ExecMTask"

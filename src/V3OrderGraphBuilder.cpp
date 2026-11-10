@@ -20,11 +20,11 @@
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
-#include "V3AstUserAllocator.h"
 #include "V3Graph.h"
 #include "V3OrderGraph.h"
 #include "V3OrderInternal.h"
 #include "V3Sched.h"
+#include "V3VNUserAllocator.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
@@ -88,7 +88,7 @@ class OrderGraphBuilder final : public VNVisitor {
     const VNUser2InUse user2InUse;
     const VNUser3InUse user3InUse;
     const VNUser4InUse user4InUse;
-    AstUser1Allocator<AstVarScope, OrderUser> m_orderUser;
+    VNUser1Allocator<AstVarScope, OrderUser> m_orderUser;
 
     // STATE
     OrderGraph* const m_graphp;  // The ordering graph built by this visitor
@@ -119,7 +119,7 @@ class OrderGraphBuilder final : public VNVisitor {
 
     // METHODS
 
-    void iterateLogic(AstNode* nodep) {
+    void iterateLogic(AstNodeProcedure* nodep) {
         UASSERT_OBJ(!m_logicVxp, nodep, "Should not nest");
         // Reset VarUsage and VarAccess
         AstNode::user2ClearTree();
@@ -413,9 +413,6 @@ class OrderGraphBuilder final : public VNVisitor {
     }  // LCOV_EXCL_STOP
 
     //--- Verilator concoctions
-    void visit(AstCoverToggle* nodep) override {  //
-        iterateLogic(nodep);
-    }
     void visit(AstNbaCommit* nodep) override {
         UASSERT_OBJ(m_inPost, nodep, "AstNbaCommit should be in AstAlwaysPost");
         // Commit the NBAs enqueued by clocked logic in the same pass, with the other NBAs. Like

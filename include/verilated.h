@@ -1017,7 +1017,7 @@ public:  // But internals only - called from verilated modules, VerilatedSyms
                                      VerilatedVarType vltype, int vlflags,
                                      void* forceReadSignalDatap, const char* forceReadSignalName,
                                      std::pair<VerilatedVar*, VerilatedVar*> forceControlSignals,
-                                     int udims, int pdims...) VL_MT_UNSAFE;
+                                     int udims, int pdims, ...) VL_MT_UNSAFE;
     void varsInsertFromTable(const VlVarTableEntry* entp, size_t n, void* basep) VL_MT_UNSAFE;
     void paramsInsertFromTable(const VlVarTableEntry* entp, size_t n,
                                const void* const* paramPtrsp) VL_MT_UNSAFE;
@@ -1304,12 +1304,12 @@ public:
                                const char* delimiter = ".") VL_MT_SAFE;
 
     // Internal: Throw signal assertion
-    static void nullPointerError(const char* filename, int linenum) VL_ATTR_NORETURN VL_MT_SAFE;
-    static void overWidthError(const char* signame) VL_ATTR_NORETURN VL_MT_SAFE;
+    [[noreturn]] static void nullPointerError(const char* filename, int linenum) VL_MT_SAFE;
+    [[noreturn]] static void overWidthError(const char* signame) VL_MT_SAFE;
     static void queueBoundError(size_t maxSize, size_t attemptedSize) VL_MT_SAFE;
-    static void scTimePrecisionError(int sc_prec, int vl_prec) VL_ATTR_NORETURN VL_MT_SAFE;
-    static void scTraceBeforeElaborationError() VL_ATTR_NORETURN VL_MT_SAFE;
-    static void sizeMismatchError() VL_ATTR_NORETURN VL_MT_SAFE;
+    [[noreturn]] static void scTimePrecisionError(int sc_prec, int vl_prec) VL_MT_SAFE;
+    [[noreturn]] static void scTraceBeforeElaborationError() VL_MT_SAFE;
+    [[noreturn]] static void sizeMismatchError() VL_MT_SAFE;
     static void stackCheck(QData needSize) VL_MT_UNSAFE;
 
     // Internal: Load a VPI shared library (+verilator+vpi+<lib>[:<bootstrap>])

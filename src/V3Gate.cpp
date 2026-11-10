@@ -25,11 +25,11 @@
 
 #include "V3Gate.h"
 
-#include "V3AstUserAllocator.h"
 #include "V3Const.h"
 #include "V3DupFinder.h"
 #include "V3Graph.h"
 #include "V3Stats.h"
+#include "V3VNUserAllocator.h"
 
 #include <list>
 #include <unordered_map>
@@ -270,10 +270,8 @@ class GateBuildVisitor final : public VNVisitorConst {
     }
     void visit(AstNodeProcedure* nodep) override {
         const bool slow = VN_IS(nodep, Initial) || VN_IS(nodep, Final);
-        iterateLogic(nodep, slow, nodep->isJustOneBodyStmt() ? nullptr : "Multiple Stmts");
-    }
-    void visit(AstCoverToggle* nodep) override {
-        iterateLogic(nodep, false, "CoverToggle", "CoverToggle");
+        const bool oneStmt = nodep->stmtsp() && !nodep->stmtsp()->nextp();
+        iterateLogic(nodep, slow, oneStmt ? nullptr : "Multiple Stmts");
     }
     void visit(AstSenItem* nodep) override {
         VL_RESTORER(m_inSenItem);
@@ -547,7 +545,7 @@ class GateInline final {
     const VNUser2InUse m_inuser2;
 
     // Variable substitutions to apply to a given logic block
-    AstUser2Allocator<AstNode, Substitutions> m_substitutions;
+    VNUser2Allocator<AstNode, Substitutions> m_substitutions;
 
     // STATE
     GateGraph& m_graph;
@@ -842,7 +840,7 @@ class GateDedupeHash final : public V3DupFinderUserSame {
         // Parent AstNodeAssign* for this rhsp
         AstNodeAssign* parentp = nullptr;
     };
-    AstUser2Allocator<AstNodeExpr, AuxAstNodeExpr> m_auxNodeExpr;
+    VNUser2Allocator<AstNodeExpr, AuxAstNodeExpr> m_auxNodeExpr;
 
     AstNodeExpr* m_currRhsp = nullptr;  // Current node we are searching for duplicates of
     AuxAstNodeExpr m_auxCurRhsp;  // Aux of current node
@@ -913,7 +911,7 @@ class GateDedupeVarVisitor final : public VNVisitorConst {
     // 1. AstNodeAssign
     // 2. AstAlways -> AstNodeAssign
     //   (Note, the assign must also be the only node under the always)
-    // 3. AstAlways -> AstNodeIf -> AstNodeAssign
+    // 3. AstAlways -> AstIf -> AstNodeAssign
     //   (Note, the IF must be the only node under the always,
     //    and the assign must be the only node under the if, other than the ifcond)
     // Any other ordering or node type, except for an AstComment, makes it not dedupable
@@ -957,7 +955,7 @@ class GateDedupeVarVisitor final : public VNVisitorConst {
     //  always @(...)
     //    if (...)
     //       foo = ...; // or foo <= ...;
-    void visit(AstNodeIf* nodep) override {
+    void visit(AstIf* nodep) override {
         if (!m_dedupable) return;
 
         if (m_always && !m_ifCondp && !nodep->elsesp()) {

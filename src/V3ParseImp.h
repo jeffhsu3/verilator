@@ -75,7 +75,7 @@ struct VMemberQualifiers final {
         return VRandAttr::NONE;
     }
     void applyToNodes(AstNodeFTask* nodesp) const {
-        for (AstNodeFTask* nodep = nodesp; nodep; nodep = VN_AS(nodep->nextp(), NodeFTask)) {
+        for (AstNodeFTask* const nodep : VNList<AstNodeFTask>{nodesp}) {
             if (m_local) nodep->isHideLocal(true);
             if (m_protected) nodep->isHideProtected(true);
             if (m_static) nodep->isStatic(true);
@@ -95,7 +95,7 @@ struct VMemberQualifiers final {
         }
     }
     void applyToNodes(AstVar* nodesp) const {
-        for (AstVar* nodep = nodesp; nodep; nodep = VN_AS(nodep->nextp(), Var)) {
+        for (AstVar* const nodep : VNList<AstVar>{nodesp}) {
             if (m_rand) nodep->rand(VRandAttr::RAND);
             if (m_randc) nodep->rand(VRandAttr::RAND_CYCLIC);
             if (m_local) nodep->isHideLocal(true);
@@ -263,7 +263,7 @@ public:
 
     // For 'unique if' cannot have empty else statements as then assertion
     // would misfire
-    AstNode* newBlock(FileLine* fl, AstNode* nodep) {
+    AstNodeStmt* newBlock(FileLine* fl, AstNodeStmt* nodep) {
         if (nodep) return nodep;
         return new AstBegin{fl, "", nullptr, true};
     }
@@ -315,7 +315,7 @@ public:
     void dumpInputsFile() VL_MT_DISABLED;
     void dumpTokensAhead(int line) VL_MT_DISABLED;
     static void candidatePli(VSpellCheck* spellerp) VL_MT_DISABLED;
-    void importIfInStd(FileLine* fileline, const string& id, bool doImport);
+    void importIfInStd(FileLine* fileline, const string& id);
     AstNodeExpr* makePropertyCase(FileLine* flp, AstNodeExpr* exprp, AstCaseItem* itemsp);
 
 private:

@@ -785,13 +785,14 @@ public:
 
 #ifdef VL_DEBUG
     uint64_t editCount() const { return m_editCount; }
+#endif
     void editCountInc() {
-        m_editCount = ++s_editCntGbl;  // Preincrement, so can "watch AstNode::s_editCntGbl=##"
+        ++s_editCntGbl;
+#ifdef VL_DEBUG
+        m_editCount = s_editCntGbl;  // Incremented before, so can "watch AstNode::s_editCntGbl=##"
+#endif
         VIsCached::clearCacheTree();  // Any edit clears all caching
     }
-#else
-    void editCountInc() { ++s_editCntGbl; }
-#endif
     static uint64_t editCountLast() VL_MT_SAFE { return s_editCntLast; }
     static uint64_t editCountGbl() VL_MT_SAFE { return s_editCntGbl; }
     static void editCountSetLast() { s_editCntLast = editCountGbl(); }
@@ -925,7 +926,7 @@ public:
 
     // METHODS - dump and error
     void v3errorEnd(const std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex);
-    void v3errorEndFatal(const std::ostringstream& str) const VL_ATTR_NORETURN
+    [[noreturn]] void v3errorEndFatal(const std::ostringstream& str) const
         VL_RELEASE(V3Error::s().m_mutex);
     string warnContextPrimary() const VL_REQUIRES(V3Error::s().m_mutex) {
         return fileline()->warnContextPrimary();
@@ -1033,7 +1034,7 @@ public:
     virtual bool isBrancher() const { return false; }
     // Else a AstTime etc that can't be pushed out
     virtual bool isGateOptimizable() const { return !isTimingControl(); }
-    // GateDedupable is a slightly larger superset of GateOptimzable (eg, AstNodeIf)
+    // GateDedupable is a slightly larger superset of GateOptimzable (eg, AstIf)
     virtual bool isGateDedupable() const { return isGateOptimizable(); }
     // Whether the node can be used in expression coverage
     virtual bool isExprCoverageEligible() const { return isGateDedupable(); }
@@ -1735,7 +1736,7 @@ class VDTypeNameScopes final {
     static const VDTypeNameScopes* s_currentp;  // Index in use, or nullptr if none
 
     // METHODS
-    void index(AstNode* nodep, AstNode* scopep);
+    void index(AstNode* nodesp, AstNode* scopep);
     VL_UNCOPYABLE(VDTypeNameScopes);
     VL_UNMOVABLE(VDTypeNameScopes);
 
